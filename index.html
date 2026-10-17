@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local document chat</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: rgba(255, 255, 255, 0.03);
+    --surface-hover: rgba(255, 255, 255, 0.06);
+    --ink: #f0f6fc;
+    --muted: #8b949e;
+    --user-bg: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+    --user-ink: #04150e;
+    --assistant-bg: rgba(255, 255, 255, 0.05);
+    --assistant-border: rgba(255, 255, 255, 0.08);
+    --error: #ff5f56;
+    --glow: 0 0 20px rgba(56, 239, 125, 0.15);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.6 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    overflow: hidden;
+  }
+
+  button, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid #38ef7d; outline-offset: 2px; }
+
+  /* Full-bleed Conversation Scroll Area */
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 24px 20px 12px;
+    scroll-behavior: smooth;
+  }
+  #log::-webkit-scrollbar { width: 6px; }
+  #log::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.15); border-radius: 10px; }
+
+  .thread {
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+
+  /* Empty State */
+  .empty {
+    max-width: 480px;
+    margin: 20vh auto 0;
+    text-align: center;
+    animation: fadeIn 0.4s ease-out;
+  }
+  .empty-icon {
+    width: 48px;
+    height: 48px;
+    margin: 0 auto 14px;
+    border-radius: 14px;
+    background: rgba(56, 239, 125, 0.1);
+    border: 1px solid rgba(56, 239, 125, 0.2);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #38ef7d;
+  }
+  .empty strong {
+    display: block;
+    color: var(--ink);
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    letter-spacing: -0.01em;
+  }
+  .empty p {
+    color: var(--muted);
+    font-size: 14px;
+    margin: 0;
+    line-height: 1.5;
+  }
+
+  /* Messages */
+  .msg {
+    display: flex;
+    flex-direction: column;
+    max-width: 85%;
+    animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.assistant { align-self: flex-start; }
+
+  .bubble {
+    padding: 12px 16px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .user .bubble {
+    background: var(--user-bg);
+    color: var(--user-ink);
+    font-weight: 500;
+    border-radius: 18px 18px 4px 18px;
+    box-shadow: var(--glow);
+  }
+  .assistant .bubble {
+    background: var(--assistant-bg);
+    border: 1px solid var(--assistant-border);
+    color: var(--ink);
+    border-radius: 18px 18px 18px 4px;
+    backdrop-filter: blur(8px);
+  }
+  .error .bubble {
+    border-color: rgba(255, 95, 86, 0.4);
+    background: rgba(255, 95, 86, 0.1);
+    color: #ff8e88;
+  }
+
+  /* Typing Indicator */
+  .thinking .bubble {
+    display: flex;
+    gap: 6px;
+    padding: 14px 18px;
+    align-items: center;
+  }
+  .thinking i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: #38ef7d;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .thinking i:nth-child(2) { animation-delay: 0.2s; }
+  .thinking i:nth-child(3) { animation-delay: 0.4s; }
+
+  /* Pinned Composer Bar */
+  .composer-wrapper {
+    width: 100%;
+    padding: 12px 20px 16px;
+    background: linear-gradient(180deg, rgba(13, 17, 23, 0) 0%, rgba(13, 17, 23, 0.95) 40%);
+  }
+  form {
+    display: flex;
+    gap: 10px;
+    align-items: flex-end;
+    max-width: 800px;
+    width: 100%;
+    margin: 0 auto;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 16px;
+    padding: 6px 6px 6px 14px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+  form:focus-within {
+    border-color: rgba(56, 239, 125, 0.5);
+    box-shadow: 0 0 16px rgba(56, 239, 125, 0.12);
+  }
+  textarea {
+    flex: 1;
+    resize: none;
+    max-height: 140px;
+    padding: 8px 0;
+    background: transparent;
+    border: none;
+    line-height: 1.45;
+    outline: none;
+  }
+  textarea::placeholder { color: var(--muted); }
+  
+  .send {
+    background: var(--user-bg);
+    color: var(--user-ink);
+    border: 0;
+    border-radius: 10px;
+    width: 38px;
+    height: 38px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.15s ease, opacity 0.15s ease;
+    flex-shrink: 0;
+  }
+  .send svg { width: 16px; height: 16px; fill: currentColor; }
+  .send:hover:not(:disabled) { transform: scale(1.05); }
+  .send:active:not(:disabled) { transform: scale(0.95); }
+  .send:disabled { opacity: 0.3; cursor: default; }
+
+  /* Animations */
+  @keyframes slideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.3; transform: scale(0.8); }
+    50% { opacity: 1; transform: scale(1.2); }
+  }
+
+  @media (max-width: 600px) {
+    #log { padding: 16px 14px 8px; }
+    .msg { max-width: 92%; }
+    .composer-wrapper { padding: 10px 14px 12px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  }
+</style>
+</head>
+<body>
+  <main id="log">
+    <div class="empty" id="empty">
+      <div class="empty-icon">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/><circle cx="12" cy="10" r="3"/></svg>
+      </div>
+      <strong>Ask about what’s around you</strong>
+      <p>Answers come from local documents near your active location. Context is remembered across follow-ups.</p>
+    </div>
+    <div class="thread" id="thread"></div>
+  </main>
+
+  <div class="composer-wrapper">
+    <form id="form" autocomplete="off">
+      <textarea id="prompt" rows="1" placeholder="Ask a question..." aria-label="Your question"></textarea>
+      <button class="send" id="send" type="submit" aria-label="Send message">
+        <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+      </button>
+    </form>
+  </div>
+
+<script>
+  const CHAT_URL = "/chat";
+
+  const $ = (id) => document.getElementById(id);
+  const thread = $("thread"), log = $("log"), empty = $("empty");
+  const form = $("form"), prompt_ = $("prompt"), sendBtn = $("send");
+
+  let history = [];   // [{role, content}] sent back to the server with every query
+  let busy = false;
+
+  /* ---------- Geolocation ---------- */
+  function getCoords() {
+    return new Promise((resolve, reject) => {
+      if (!window.isSecureContext) {
+        return reject(new Error("Location needs a secure page. Open this app from http://localhost or over https."));
+      }
+      if (!("geolocation" in navigator)) {
+        return reject(new Error("This browser doesn’t support geolocation."));
+      }
+      navigator.geolocation.getCurrentPosition(
+        (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }),
+        (e) => reject(new Error(geoMessage(e))),
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
+      );
+    });
+  }
+
+  function geoMessage(e) {
+    switch (e.code) {
+      case 1: return "Location access is blocked. Allow it for this site in your browser.";
+      case 2: return "Your position couldn’t be determined. Check that location services are on.";
+      case 3: return "Finding your location took too long. Try again.";
+      default: return e.message || "Couldn’t get your location.";
+    }
+  }
+
+  const docSource = (c) => `${c.lat},${c.lon}`;
+
+  /* ---------- Rendering ---------- */
+  function scrollDown() { log.scrollTop = log.scrollHeight; }
+
+  function addMessage(role, text) {
+    empty.hidden = true;
+    const wrap = document.createElement("div");
+    wrap.className = `msg ${role}`;
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+    bubble.textContent = text;
+    wrap.appendChild(bubble);
+
+    thread.appendChild(wrap);
+    scrollDown();
+    return wrap;
+  }
+
+  function addThinking() {
+    const wrap = document.createElement("div");
+    wrap.className = "msg assistant thinking";
+    wrap.setAttribute("role", "status");
+    wrap.setAttribute("aria-label", "Waiting for an answer");
+    wrap.innerHTML = '<div class="bubble"><i></i><i></i><i></i></div>';
+    thread.appendChild(wrap);
+    scrollDown();
+    return wrap;
+  }
+
+  function addError(message) {
+    const wrap = addMessage("assistant", message);
+    wrap.classList.add("error");
+  }
+
+  function setBusy(state) {
+    busy = state;
+    sendBtn.disabled = state;
+  }
+
+  /* ---------- Sending ---------- */
+  async function send(text) {
+    setBusy(true);
+    const userMsg = addMessage("user", text);
+    const thinking = addThinking();
+    try {
+      const coords = await getCoords();   // fresh position for every query[cite: 1]
+      const res = await fetch(CHAT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          doc_source: docSource(coords),
+          chat_history: history,
+          query: text,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `The server returned an error (${res.status}).`);
+
+      history.push({ role: "user", content: text }, { role: "assistant", content: data.answer });
+      thinking.remove();
+      addMessage("assistant", data.answer);
+    } catch (err) {
+      thinking.remove();
+      userMsg.remove();
+      if (!thread.children.length) empty.hidden = false;
+      prompt_.value = text;               // put the question back so it can be resent
+      resize();
+      if (err instanceof TypeError) {
+        addError("Couldn’t reach the server. Check that the Flask app is running, then send again.");
+      } else {
+        addError(err.message);
+      }
+    } finally {
+      setBusy(false);
+      prompt_.focus();
+    }
+  }
+
+  /* ---------- Events ---------- */
+  function resize() {
+    prompt_.style.height = "auto";
+    prompt_.style.height = Math.min(prompt_.scrollHeight, 140) + "px";
+  }
+
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const text = prompt_.value.trim();
+    if (!text || busy) return;
+    prompt_.value = "";
+    resize();
+    send(text);
+  });
+
+  prompt_.addEventListener("input", resize);
+  prompt_.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  prompt_.focus();
+</script>
+</body>
+</html>

@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Skopje Nearby Map</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; }
+  #map { position: absolute; inset: 0; }
+  #status {
+    position: absolute; top: 10px; right: 10px; z-index: 1000; max-width: 280px;
+    background: #fff; padding: 6px 10px; border-radius: 6px; font-size: 13px;
+    box-shadow: 0 1px 6px rgba(0,0,0,.3);
+  }
+  #status.err { color: #b00; }
+  #listBtn {
+    position: absolute; right: 10px; bottom: 30px; z-index: 1100;
+    width: 44px; height: 44px; border: 0; border-radius: 50%;
+    background: #fff; color: #222; font-size: 20px; cursor: pointer;
+    box-shadow: 0 1px 6px rgba(0,0,0,.4);
+  }
+  #listBtn:hover { background: #f2f2f2; }
+  #chatBtn {
+    position: absolute; left: 10px; bottom: 30px; z-index: 1100;
+    width: 44px; height: 44px; border: 0; border-radius: 50%;
+    background: #fff; color: #222; font-size: 22px; cursor: pointer;
+    box-shadow: 0 1px 6px rgba(0,0,0,.4);
+  }
+  #chatBtn:hover { background: #f2f2f2; }
+  #listWrap {
+    position: fixed; inset: 0; z-index: 1200; display: none;
+    align-items: center; justify-content: center; background: rgba(0,0,0,.35);
+  }
+  #listWrap.open { display: flex; }
+  #listBox {
+    width: min(440px, calc(100vw - 24px)); max-height: 75vh; display: flex; flex-direction: column;
+    background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.4); overflow: hidden;
+  }
+  #listHead {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid #ddd; font-weight: 600;
+  }
+  #listClose { border: 0; background: none; font-size: 22px; line-height: 1; cursor: pointer; }
+  #listBody { overflow-y: auto; position: relative; flex: 1 1 auto; min-height: 0; }
+  #listMsg { padding: 14px; color: #777; text-align: center; }
+  #listMsg:empty { display: none; }
+  #listInner { position: relative; margin: 0; padding: 0; list-style: none; }
+  #listInner li {
+    position: absolute; left: 0; right: 0; top: 0; height: 40px; box-sizing: border-box;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 0 14px; border-bottom: 1px solid #eee; background: #fff;
+    opacity: 0; transition: transform .5s ease, opacity .3s ease;
+  }
+  #listInner li.in { opacity: 1; }
+  #listInner .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #listInner .dist { white-space: nowrap; color: #555; font-variant-numeric: tabular-nums; }
+  @media (prefers-reduced-motion: reduce) { #listInner li { transition: none; } }
+  #chatWrap {
+    position: fixed; inset: 0; z-index: 1200; display: none;
+    align-items: center; justify-content: center; background: rgba(0,0,0,.35);
+  }
+  #chatWrap.open { display: flex; }
+  #chatBox {
+    width: min(480px, calc(100vw - 24px)); height: min(70vh, 640px);
+    display: flex; flex-direction: column;
+    background: #fff; border-radius: 8px; box-shadow: 0 4px 24px rgba(0,0,0,.4); overflow: hidden;
+  }
+  #chatHead {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid #ddd; font-weight: 600; flex-shrink: 0;
+  }
+  #chatClose { border: 0; background: none; font-size: 22px; line-height: 1; cursor: pointer; }
+  #chatBody { flex: 1 1 auto; min-height: 0; position: relative; }
+  #chatBody iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .desc { margin-top: 6px; max-height: 40vh; overflow-y: auto; white-space: pre-wrap; font-size: 13px; line-height: 1.4; }
+  .desc.muted { color: #777; font-style: italic; }
+  .desc.err { color: #b00; }
+</style>
+</head>
+<body>
+<div id="status">Locating…</div>
+<button id="chatBtn" title="Chat" aria-label="Open chat">💬</button>
+<button id="listBtn" title="Nearby places" aria-label="Show nearby places">&#9776;</button>
+<div id="listWrap">
+  <div id="listBox" role="dialog" aria-modal="true" aria-labelledby="listTitle">
+    <div id="listHead"><span id="listTitle">Nearby places</span><button id="listClose" aria-label="Close">&times;</button></div>
+    <div id="listBody"><div id="listMsg"></div><ul id="listInner"></ul></div>
+  </div>
+</div>
+<div id="chatWrap">
+  <div id="chatBox" role="dialog" aria-modal="true" aria-labelledby="chatTitle">
+    <div id="chatHead"><span id="chatTitle">Chat</span><button id="chatClose" aria-label="Close">&times;</button></div>
+    <div id="chatBody"><iframe src="/chatui" title="Chat"></iframe></div>
+  </div>
+</div>
+<div id="map"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const OVERPASS_URL = "/api/interpreter"; // your local Overpass endpoint
+const RADIUS = 500;                      // metres
+const REFRESH_MS = 500;                 // refresh interval
+const FALLBACK = [41.9973, 21.4280];      // used only if geolocation is unavailable
+
+const map = L.map("map").setView(FALLBACK, 15);
+L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19,
+  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+}).addTo(map);
+
+const statusEl = document.getElementById("status");
+const setStatus = (t, err) => { statusEl.textContent = t; statusEl.className = err ? "err" : ""; };
+
+// Convert Overpass JSON ({elements:[...]}) to GeoJSON for Leaflet.
+// Ways need geometry: use `out geom;` (or `out body; >; out skel qt;`). `out center;` gives points.
+function overpassToGeoJSON(osm) {
+  if (!osm || !Array.isArray(osm.elements))
+    throw new Error("Not Overpass JSON (missing 'elements' array)");
+
+  const nodes = new Map();
+  const usedByWay = new Set();
+  osm.elements.forEach(e => { if (e.type === "node") nodes.set(e.id, [e.lon, e.lat]); });
+  osm.elements.forEach(e => { if (e.type === "way" && e.nodes) e.nodes.forEach(n => usedByWay.add(n)); });
+
+  const wayCoords = w => {
+    if (w.geometry) return w.geometry.filter(p => p).map(p => [p.lon, p.lat]);
+    if (w.nodes) return w.nodes.map(n => nodes.get(n)).filter(Boolean);
+    return [];
+  };
+  const isClosed = c => c.length >= 4 &&
+    c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1];
+  const linearTag = t => t && (t.highway || t.barrier || t.railway || t.waterway || t.power);
+  const props = e => ({ ...(e.tags || {}), _osm: e.type + "/" + e.id });
+
+  const features = [];
+  const add = (geometry, e) => features.push({ type: "Feature", properties: props(e), geometry });
+
+  osm.elements.forEach(e => {
+    if (e.type === "node") {
+      // skip untagged nodes that only exist as way vertices
+      if (!e.tags && usedByWay.has(e.id)) return;
+      if (e.lat != null) add({ type: "Point", coordinates: [e.lon, e.lat] }, e);
+    } else if (e.type === "way") {
+      const c = wayCoords(e);
+      if (c.length >= 2) {
+        add(isClosed(c) && !linearTag(e.tags)
+          ? { type: "Polygon", coordinates: [c] }
+          : { type: "LineString", coordinates: c }, e);
+      } else if (e.center) {
+        add({ type: "Point", coordinates: [e.center.lon, e.center.lat] }, e);
+      }
+    } else if (e.type === "relation") {
+      let drew = false;
+      (e.members || []).forEach(m => {
+        if (m.type === "way" && m.geometry) {
+          const c = m.geometry.filter(p => p).map(p => [p.lon, p.lat]);
+          if (c.length < 2) return;
+          const ring = isClosed(c) && m.role === "outer" && !linearTag(e.tags);
+          add(ring ? { type: "Polygon", coordinates: [c] }
+                   : { type: "LineString", coordinates: c }, e);
+          drew = true;
+        } else if (m.type === "node" && m.lat != null) {
+          add({ type: "Point", coordinates: [m.lon, m.lat] }, e);
+          drew = true;
+        }
+      });
+      if (!drew && e.center) add({ type: "Point", coordinates: [e.center.lon, e.center.lat] }, e);
+    }
+  });
+  return { type: "FeatureCollection", features };
+}
+
+const esc = t => String(t).replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// Cyrillic -> Latin (Macedonian first, plus common Serbian/Russian/Bulgarian letters)
+const CYR = {
+  а:"a", б:"b", в:"v", г:"g", д:"d", ѓ:"gj", е:"e", ж:"zh", з:"z", ѕ:"dz", и:"i", ј:"j",
+  к:"k", л:"l", љ:"lj", м:"m", н:"n", њ:"nj", о:"o", п:"p", р:"r", с:"s", т:"t", ќ:"kj",
+  у:"u", ф:"f", х:"h", ц:"c", ч:"ch", џ:"dzh", ш:"sh",
+  ђ:"dj", ћ:"c", ё:"yo", й:"y", ы:"y", э:"e", ю:"yu", я:"ya", щ:"shch", ъ:"", ь:"",
+  і:"i", ї:"yi", є:"ye", ґ:"g"
+};
+
+function toLatin(str) {
+  const chars = [...str];
+  const isUp = c => c !== undefined && c !== c.toLowerCase();
+  return chars.map((ch, i) => {
+    const lower = ch.toLowerCase();
+    if (!(lower in CYR)) return ch;
+    const out = CYR[lower];
+    if (!isUp(ch) || !out) return out;
+    // all-caps word -> ALL CAPS ("ZH"), otherwise capitalise only the first letter ("Zh")
+    return (isUp(chars[i - 1]) || isUp(chars[i + 1])) ? out.toUpperCase()
+         : out[0].toUpperCase() + out.slice(1);
+  }).join("");
+}
+
+// prefer the English name from OSM, otherwise transliterate whatever name is there
+const displayName = p => p["name:en"] || toLatin(p.name || "") || p._osm;
+
+function popupHtml(p) {
+  return "<strong>" + esc(displayName(p)) + "</strong>";
+}
+
+// ---- nearby places list ----
+let places = []; // [{key, name, lat, lon}] from the latest successful query
+
+function haversine(lat1, lon1, lat2, lon2) { // great-circle distance in metres
+  const R = 6371000, rad = d => d * Math.PI / 180;
+  const dLat = rad(lat2 - lat1), dLon = rad(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 +
+            Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+const fmtDist = m => m < 1000 ? Math.round(m) + " m" : (m / 1000).toFixed(2) + " km";
+
+function featureLatLon(f) {
+  const g = f.geometry;
+  if (!g) return null;
+  if (g.type === "Point") return [g.coordinates[1], g.coordinates[0]];
+  const pts = [];
+  (function walk(c) { typeof c[0] === "number" ? pts.push(c) : c.forEach(walk); })(g.coordinates);
+  if (!pts.length) return null;
+  return [pts.reduce((a, q) => a + q[1], 0) / pts.length, pts.reduce((a, q) => a + q[0], 0) / pts.length];
+}
+
+const listWrap = document.getElementById("listWrap");
+const listInner = document.getElementById("listInner");
+const listMsg = document.getElementById("listMsg");
+const ROW_H = 40; // must match the li height in CSS
+const rowEls = new Map(); // place key -> <li>
+let animateRows = false;  // false while the window is first filled, so rows don't fade in on open
+
+// Rows are absolutely positioned and moved with a CSS transform transition, so when distances
+// change they glide to their new slot; new rows fade in, rows that leave fade out.
+function renderList() {
+  if (!listWrap.classList.contains("open")) return;
+
+  // only places inside the search radius, nearest first
+  const rows = pos ? places
+    .map(pl => ({ key: pl.key, name: pl.name, d: haversine(pos[0], pos[1], pl.lat, pl.lon) }))
+    .filter(r => r.d <= RADIUS)
+    .sort((x, y) => x.d - y.d || x.name.localeCompare(y.name)) : [];
+
+  listMsg.textContent = !pos ? "Waiting for your location…"
+                      : rows.length ? "" : "No places within " + RADIUS + " m";
+  document.getElementById("listTitle").textContent =
+    rows.length ? "Nearby places (" + rows.length + ")" : "Nearby places";
+
+  const keep = new Set();
+  rows.forEach((r, i) => {
+    keep.add(r.key);
+    let el = rowEls.get(r.key);
+    if (!el) {
+      el = document.createElement("li");
+      el.innerHTML = '<span class="nm"></span><span class="dist"></span>';
+      el.style.transform = "translateY(" + i * ROW_H + "px)"; // start in its final slot
+      listInner.appendChild(el);
+      rowEls.set(r.key, el);
+      if (animateRows) requestAnimationFrame(() => requestAnimationFrame(() => el.classList.add("in")));
+      else el.classList.add("in");
+    } else {
+      el.style.transform = "translateY(" + i * ROW_H + "px)";
+    }
+    el.firstChild.textContent = r.name;
+    el.lastChild.textContent = fmtDist(r.d);
+  });
+
+  for (const [key, el] of rowEls) {
+    if (keep.has(key)) continue;
+    rowEls.delete(key);
+    el.classList.remove("in");          // fade out, the rows below slide up into the gap
+    setTimeout(() => el.remove(), 400);
+  }
+  listInner.style.height = rows.length * ROW_H + "px";
+}
+
+const openList = () => {
+  listWrap.classList.add("open");
+  animateRows = false;
+  renderList();
+  animateRows = true;
+};
+const closeList = () => {
+  listWrap.classList.remove("open");
+  rowEls.clear();
+  listInner.innerHTML = "";
+};
+const listBtn = document.getElementById("listBtn");
+L.DomEvent.disableClickPropagation(listBtn);
+listBtn.onclick = openList;
+document.getElementById("listClose").onclick = closeList;
+listWrap.onclick = e => { if (e.target === listWrap) closeList(); };
+
+const chatWrap = document.getElementById("chatWrap");
+const openChat = () => chatWrap.classList.add("open");
+const closeChat = () => chatWrap.classList.remove("open");
+const chatBtn = document.getElementById("chatBtn");
+L.DomEvent.disableClickPropagation(chatBtn);
+chatBtn.onclick = openChat;
+document.getElementById("chatClose").onclick = closeChat;
+chatWrap.onclick = e => { if (e.target === chatWrap) closeChat(); };
+
+document.addEventListener("keydown", e => {
+  if (e.key !== "Escape") return;
+  if (chatWrap.classList.contains("open")) closeChat();
+  else if (listWrap.classList.contains("open")) closeList();
+});
+
+// Features are kept between refreshes and only added/removed when they appear/disappear,
+// so open popups and the map view are never disturbed.
+// true for mouse/trackpad; false on phones and tablets, where a tap is needed instead
+const CAN_HOVER = window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+
+const group = L.layerGroup().addTo(map);
+const shown = new Map(); // key -> Leaflet layer
+
+// ---- proximity: blue marker + "You are at ..." popup ----
+const NEAR_IN = 5;    // metres: become "near"
+const NEAR_OUT = 10;  // metres: must get this far away before the place can trigger again
+const state = new Map(); // key -> {layer, lat, lon, name, near, dismissed}
+let internal = false;    // true while the code itself opens/closes popups
+
+// Persistent description cache: match by name + position within 5 m.
+// Survives feature removal/re-add and user leaving before the response arrives.
+// Entry shape: { name, lat, lon, desc?, err?, promise? }
+const DESC_MATCH_M = 5;
+const descCache = [];
+
+function findDescCache(name, lat, lon) {
+  return descCache.find(c =>
+    c.name === name && haversine(lat, lon, c.lat, c.lon) <= DESC_MATCH_M
+  ) || null;
+}
+
+function setNearStyle(s, near) {
+  if (s.layer instanceof L.CircleMarker) {
+    s.layer.setStyle({ fillColor: near ? "#1565ff" : "#e63946" });
+    s.layer.setRadius(near ? 9 : 7);
+  } else {
+    s.layer.setStyle({ color: near ? "#1565ff" : "#e63946" });
+  }
+}
+
+function openQuietly(s) { // open the popup without letting Leaflet pan the map
+  const pop = s.layer.getPopup();
+  internal = true;
+  pop.options.autoPan = false;
+  s.layer.openPopup();
+  pop.options.autoPan = true;
+  internal = false;
+}
+
+function nearHtml(s) {
+  let h = "You are at <strong>" + esc(s.name) + "</strong>";
+  if (s.desc) h += '<div class="desc">' + esc(s.desc) + "</div>";
+  else if (s.loading) h += '<div class="desc muted">Loading description\u2026</div>';
+  else if (s.descErr) h += '<div class="desc err">Couldn\u2019t load description: ' + esc(s.descErr) + "</div>";
+  return h;
+}
+
+// POST /chat once per place (name + ~5 m). Cache survives leave/re-enter and feature churn.
+// Pending requests are shared so a second enter while one is in flight reuses the same promise.
+async function fetchDescription(s) {
+  if (s.desc || s.loading || !pos) return;
+
+  let entry = findDescCache(s.name, s.lat, s.lon);
+
+  // Already have a finished result in the cache
+  if (entry && entry.desc != null) {
+    s.desc = entry.desc;
+    s.layer.setPopupContent(nearHtml(s));
+    return;
+  }
+  if (entry && entry.err != null) {
+    s.descErr = entry.err;
+    s.layer.setPopupContent(nearHtml(s));
+    return;
+  }
+
+  // In-flight request: attach to the existing promise and show loading
+  if (entry && entry.promise) {
+    s.loading = true;
+    s.layer.setPopupContent(nearHtml(s));
+    try {
+      await entry.promise;
+      if (entry.desc != null) s.desc = entry.desc;
+      else if (entry.err != null) s.descErr = entry.err;
+    } finally {
+      s.loading = false;
+      if (s.near) s.layer.setPopupContent(nearHtml(s));
+    }
+    return;
+  }
+
+  // Brand-new request
+  s.loading = true;
+  s.descErr = null;
+  s.layer.setPopupContent(nearHtml(s));
+
+  entry = { name: s.name, lat: s.lat, lon: s.lon };
+  descCache.push(entry);
+
+  const promise = (async () => {
+    try {
+      const r = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          doc_source: pos[0] + "," + pos[1],
+          chat_history: [],
+          query: "Tell me about " + s.name
+        })
+      });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const data = await r.json();
+      const answer = (data.answer || "").trim();
+      if (!answer) throw new Error("empty answer");
+      entry.desc = answer;
+    } catch (e) {
+      entry.err = e.message;
+    } finally {
+      entry.promise = null;
+    }
+  })();
+  entry.promise = promise;
+
+  try {
+    await promise;
+    if (entry.desc != null) s.desc = entry.desc;
+    else if (entry.err != null) s.descErr = entry.err;
+  } finally {
+    s.loading = false;
+    if (s.near) s.layer.setPopupContent(nearHtml(s));
+  }
+}
+
+function enterPlace(s) {
+  s.near = true;
+  setNearStyle(s, true);
+  // Restore finished result from cache immediately (if any)
+  const cached = findDescCache(s.name, s.lat, s.lon);
+  if (cached) {
+    if (cached.desc != null) s.desc = cached.desc;
+    else if (cached.err != null) s.descErr = cached.err;
+  }
+  s.layer.setPopupContent(nearHtml(s));
+  if (!s.dismissed) openQuietly(s);
+  fetchDescription(s);
+}
+
+function leavePlace(s) {
+  s.near = false;
+  s.dismissed = false; // gone far enough: it may trigger again next time
+  setNearStyle(s, false);
+  s.layer.setPopupContent("<strong>" + esc(s.name) + "</strong>");
+  if (s.layer.isPopupOpen()) {
+    internal = true;
+    s.layer.closePopup();
+    internal = false;
+  }
+}
+
+function checkProximity() {
+  if (!pos) return;
+  for (const s of state.values()) {
+    const d = haversine(pos[0], pos[1], s.lat, s.lon);
+    if (!s.near && d <= NEAR_IN) enterPlace(s);
+    else if (s.near && d >= NEAR_OUT) leavePlace(s);
+  }
+}
+
+function show(osm) {
+  const gj = overpassToGeoJSON(osm);
+  const seen = new Set();
+  const counts = {};
+  const list = [];
+  gj.features.forEach(f => {
+    const id = f.properties._osm;
+    const key = id + "#" + (counts[id] = (counts[id] || 0) + 1);
+    seen.add(key);
+    const c = featureLatLon(f);
+    if (c) list.push({ key, name: displayName(f.properties), lat: c[0], lon: c[1] });
+    if (shown.has(key)) return;
+    let inner = null;
+    const l = L.geoJSON(f, {
+      style: { color: "#e63946", weight: 3, fillOpacity: 0.3 },
+      pointToLayer: (ft, ll) => L.circleMarker(ll, {
+        radius: 7, color: "#fff", weight: 2, fillColor: "#e63946", fillOpacity: 1
+      }),
+      onEachFeature: (ft, layer) => {
+        inner = layer;
+        const html = popupHtml(ft.properties || {});
+        layer.bindPopup(html); // click / tap
+        if (CAN_HOVER) {       // mouse only: show the name on hover as well
+          layer.bindTooltip(html, { direction: "top", offset: [0, -8] });
+          layer.on("popupopen", () => layer.closeTooltip());
+        }
+      }
+    });
+    shown.set(key, l);
+    group.addLayer(l);
+    if (c && inner) {
+      const s = { layer: inner, lat: c[0], lon: c[1], name: displayName(f.properties), near: false, dismissed: false };
+      // closing a popup while near = "don't show it again until I've left and come back"
+      inner.on("popupclose", () => { if (!internal && s.near) s.dismissed = true; });
+      state.set(key, s);
+    }
+  });
+  for (const [key, l] of shown) {
+    if (!seen.has(key)) { group.removeLayer(l); shown.delete(key); state.delete(key); }
+  }
+  places = list;
+  renderList();
+  checkProximity();
+  return gj.features.length;
+}
+
+const buildQuery = (lat, lon) => `[out:json][timeout:60];
+(
+  nwr["tourism"~"attraction|museum|viewpoint|artwork|gallery|historic"]["name"](around:${RADIUS},${lat},${lon});
+);
+out center tags;`;
+
+let pos = null;      // latest geolocation fix
+let busy = false;    // a request is still in flight
+let centered = false;
+let youMarker = null, youRing = null;
+
+function onFix(p) {
+  pos = [p.coords.latitude, p.coords.longitude];
+  if (!youMarker) {
+    youMarker = L.circleMarker(pos, { radius: 8, color: "#fff", weight: 2, fillColor: "#2a6fdb", fillOpacity: 1 })
+      .addTo(map).bindTooltip("You are here");
+    youRing = L.circle(pos, { radius: RADIUS, color: "#2a6fdb", weight: 1, fillOpacity: 0.04 }).addTo(map);
+  } else {
+    youMarker.setLatLng(pos);
+    youRing.setLatLng(pos);
+  }
+  renderList();
+  checkProximity();
+  if (!centered) { // first fix only: centre the map once and query immediately
+    map.setView(pos, 15);
+    centered = true;
+    refresh();
+  }
+}
+
+async function refresh() {
+  if (!pos || busy) return; // skip the tick if there is no fix yet or the last request is still running
+  busy = true;
+  const [lat, lon] = pos;
+  try {
+    const r = await fetch(OVERPASS_URL + "?data=" + encodeURIComponent(buildQuery(lat, lon)));
+    if (!r.ok) throw new Error("Overpass returned HTTP " + r.status);
+    const n = show(await r.json());
+    setStatus(n + " places within " + RADIUS + " m · " + new Date().toLocaleTimeString());
+  } catch (e) {
+    setStatus(e.message, true);
+  } finally {
+    busy = false;
+  }
+}
+
+if (!navigator.geolocation) {
+  setStatus("Geolocation not supported", true);
+} else {
+  navigator.geolocation.watchPosition(
+    onFix,
+    err => setStatus("Location failed: " + err.message, true),
+    { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
+  );
+  setInterval(refresh, REFRESH_MS);
+}
+</script>
+</body>
+</html>
